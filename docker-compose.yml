@@ -1,0 +1,13 @@
+services:
+  app:
+    build: .
+    environment:
+      PORT: 3000
+      NODE_ENV: production
+      PDF_FONT: /usr/share/fonts/otf/noto/NotoSansCJK-Regular.ttc
+    volumes:
+      - ./data:/app/data
+    container_name: tongchuang-credit
+    ports:
+      - "3005:3000"
+    restart: unless-stopped

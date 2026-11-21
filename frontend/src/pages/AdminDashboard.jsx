@@ -1,0 +1,24 @@
+import React, { useCallback, useEffect, useState } from 'react';
+import { AlertCircle, CheckCircle2, ChevronRight, ClipboardCheck, Info, LibraryBig, RefreshCw, ShieldCheck, Sparkles, TrendingDown, TrendingUp, Users } from 'lucide-react';
+import { api } from '../api.js';
+import { cn, date, percent, score } from '../utils.js';
+import { Avatar, Badge, Button, ErrorState, MetricCard, PageLoading, ProgressBar, SectionHeader } from '../components/UI.jsx';
+import GapTrendCard from '../components/GapTrendCard.jsx';
+
+export default function AdminDashboard({ navigate }) {
+  const [data, setData] = useState(null); const [error, setError] = useState(''); const [loading, setLoading] = useState(true);
+  const load = useCallback(async () => { setLoading(true); try { setData(await api('/api/admin/overview')); setError(''); } catch (err) { setError(err.message); } finally { setLoading(false); } }, []);
+  useEffect(() => { load(); }, [load]);
+  if (loading && !data) return <PageLoading />;
+  if (!data) return <ErrorState message={error} retry={load} />;
+  const pendingTotal = Object.values(data.pending).reduce((sum, value) => sum + value, 0);
+  return <div className="page-enter">
+    <div className="welcome-row"><div><p className="welcome-kicker">{data.group.name} · {data.group.term}</p><h1>小组运营总览</h1><p>先看需要支持的环节，不看谁第一。</p></div><Button variant="secondary" icon={RefreshCw} loading={loading} onClick={load}>刷新数据</Button></div>
+    <section className="admin-metrics"><MetricCard label="待处理事项" value={pendingTotal} suffix="项" note="成绩申请、判卷与题库" icon={ClipboardCheck} tone="orange" /><MetricCard label="活跃学生" value={data.students.length} suffix="人" note="账号与小组状态正常" icon={Users} /><MetricCard label="本周有效闭环" value={data.students.reduce((sum, item) => sum + item.weekly.closureCount, 0)} suffix="次" note="不统计单纯登录与下载" icon={CheckCircle2} tone="blue" /><MetricCard label="异常预警" value={data.alerts.length} suffix="项" note="先核查口径与学习负担" icon={AlertCircle} tone="red" /></section>
+    <SectionHeader title="三位成员的目标进度" description="以各自期中基准与期末目标计算，不进行名次排序。" />
+    <section className="admin-student-grid">{data.students.map(item => <article className="card admin-student-card" key={item.user.id}><div className="admin-student-head"><Avatar user={item.user} size="lg" /><div><h3>{item.user.displayName}</h3><span>@{item.user.account}</span></div><Badge tone={item.weekly.shrinkRate < 0 ? 'danger' : 'success'}>{item.weekly.shrinkRate == null ? '暂无周快照' : item.weekly.shrinkRate < 0 ? `差距扩大 ${Math.abs(item.weekly.shrinkRate)}%` : `差距缩小 ${item.weekly.shrinkRate}%`}</Badge></div><div className="admin-total-progress"><div><strong>{percent(item.summary.displayRate)}</strong><span>总目标达成率</span></div><div><b>{score(item.summary.current)}</b><span>/ 目标 {score(item.summary.target)}</span></div></div><ProgressBar value={item.summary.displayRate} color={item.user.avatarColor} /><div className="admin-subject-mini">{item.subjects.map(subject => <div key={subject.subjectId}><span><i style={{ background: subject.color }} />{subject.name}</span><b>{score(subject.current)} <small>/ {score(subject.target)}</small></b></div>)}</div><div className="admin-student-foot"><span><CheckCircle2 size={14} />本周闭环 {item.weekly.closureCount} 次</span><span>更新于 {date(item.generatedAt, true)}</span></div></article>)}</section>
+    {data.gapTrend?.students?.length ? <GapTrendCard trend={data.gapTrend} /> : null}
+    <section className="admin-bottom-grid">
+<article className="card todo-card"><SectionHeader title="今日待办" description="优先处理阻塞学习闭环的事项。" /><div className="todo-list"><button onClick={() => navigate('adminScores')}><span className="todo-icon orange"><ClipboardCheck size={20} /></span><div><b>成绩变更申请</b><p>学生提交后等待确认</p></div><strong>{data.pending.scoreRequests}</strong><ChevronRight size={17} /></button><button onClick={() => navigate('reviews')}><span className="todo-icon teal"><Sparkles size={20} /></span><div><b>AI 判卷待复核</b><p>低置信内容需重点确认</p></div><strong>{data.pending.exams}</strong><ChevronRight size={17} /></button><button onClick={() => navigate('questions')}><span className="todo-icon blue"><LibraryBig size={20} /></span><div><b>题库待校对</b><p>无答案或版权不明不可上架</p></div><strong>{data.pending.draftQuestions}</strong><ChevronRight size={17} /></button></div></article><article className="card alert-card"><SectionHeader title="需要关注，而不是批评" description="异常仅管理员可见，先核查数据和负担。" />{data.alerts.length ? data.alerts.map((alert, index) => <div className="alert-row" key={index}><TrendingDown size={18} /><div><b>{alert.displayName} · {alert.subjectName}</b><p>{alert.message}</p></div></div>) : <div className="calm-state"><span><ShieldCheck size={28} /></span><h3>目前没有成绩倒退预警</h3><p>继续保持低冲突、可持续的周复盘节奏。</p></div>}<div className="soft-note"><Info size={15} />集体周报不公开个人失误，不将差距归因到某个人。</div></article></section>
+  </div>;
+}

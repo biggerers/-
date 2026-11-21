@@ -1,0 +1,25 @@
+{
+  "name": "tongchuang-credit-system",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently \"node server/index.js\" \"npm --prefix frontend run dev\"",
+    "server": "node server/index.js",
+    "client": "npm --prefix frontend run dev",
+    "build": "npm --prefix frontend run build",
+    "start": "node server/index.js",
+    "test": "node --test server/domain.test.js server/integration.test.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "cors": "^2.8.5",
+    "express": "^4.21.2",
+    "multer": "^2.0.2",
+    "pdfjs-dist": "^4.10.38",
+    "pdfkit": "^0.15.0"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}
