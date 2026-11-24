@@ -66,12 +66,15 @@ test('端到端：权限、成绩申请审核、去重 PDF、偏好和 AI 复核
   assert.ok(gapTrend);
   assert.equal(gapTrend.students.length, 3);
   assert.equal(gapTrend.totalWeeks, 9);
-  assert.equal(gapTrend.reference.length, 9);
-  assert.equal(gapTrend.reference[0].percent, 0);
-  assert.equal(gapTrend.reference.at(-1).percent, 100);
-  assert.ok(gapTrend.students.every(student => student.points.length === gapTrend.weeks.length));
+  assert.equal(gapTrend.weeks.length, 9);
+  assert.equal(gapTrend.weeks[0].percent, 0);
+  assert.equal(gapTrend.weeks.at(-1).percent, 100);
   assert.equal(gapTrend.weeks[0].type, 'START');
   assert.equal(gapTrend.weeks.at(-1).isExamWeek, true);
+  assert.equal(gapTrend.days.length, gapTrend.reference.length);
+  assert.ok(gapTrend.students.every(student => student.points.length === gapTrend.days.length));
+  assert.equal(gapTrend.reference.at(-1).percent, 100);
+  assert.equal(gapTrend.reference.find(point => point.date === gapTrend.planStart).percent, 0);
   assert.ok(gapTrend.students.every(student => {
     const actual = student.points.filter(point => point.percent != null);
     return actual.every((point, index, list) => index === 0 || point.percent >= list[index - 1].percent);

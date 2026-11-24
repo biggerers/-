@@ -169,6 +169,10 @@ export function createSeedData() {
     questions,
     exports: [],
     exportItems: [],
+    weeklyPlans: [],
+    pointRequests: [],
+    tasks: [],
+    taskStatuses: [],
     exams: [
       {
         id: 'exam_demo_1', userId: 'user_wang', subjectId: 'sub_math', source: 'PRACTICE', occurredAt: '2026-11-18',

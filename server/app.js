@@ -36,6 +36,12 @@ const normalizeSubItemScores = (subject, values, total) => {
   return normalized;
 };
 const send = (res, data, status = 200) => res.status(status).json({ data });
+const weekStartOf = (date = new Date()) => {
+  const shifted = new Date(date.getTime() + 8 * 60 * 60 * 1000);
+  const day = (shifted.getUTCDay() + 6) % 7;
+  shifted.setUTCDate(shifted.getUTCDate() - day);
+  return shifted.toISOString().slice(0, 10);
+};
 
 function addAudit(data, actorId, action, entityType, entityId, reason = '', before = null, after = null) {
   data.auditLogs.push({ id: uid('audit'), actorId, action, entityType, entityId, reason: text(reason, 300), before, after, createdAt: now() });
@@ -450,6 +456,291 @@ export async function createApp(options = {}) {
     const subject = store.data.subjects.find(item => item.id === record.subjectId);
     res.download(filePath, `同窗进阶_${subject.name}_${record.id}.pdf`);
   }));
+
+  const planUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 8 * 1024 * 1024, files: 3 }, fileFilter: (req, file, callback) => {
+    const allowed = ['image/jpeg', 'image/png', 'image/webp'];
+    callback(allowed.includes(file.mimetype) ? null : new HttpError(400, '仅支持 JPG、PNG、WebP 图片', 'INVALID_FILE_TYPE'), allowed.includes(file.mimetype));
+  } });
+  app.post('/api/weekly-plans', auth, planUpload.array('files', 3), asyncRoute(async (req, res) => {
+    if (req.user.role !== 'STUDENT') fail(403, '仅学生可提交每周计划', 'FORBIDDEN');
+    if (!req.files?.length) fail(400, '请至少上传一张与家长讨论后的计划照片', 'MISSING_FILE');
+    const requestedWeek = text(req.body.weekStart, 10);
+    const weekStart = requestedWeek && /^\d{4}-\d{2}-\d{2}$/.test(requestedWeek) ? weekStartOf(new Date(`${requestedWeek}T00:00:00Z`)) : weekStartOf();
+    const id = uid('plan');
+    const savedFiles = [];
+    for (const file of req.files) {
+      const extension = file.mimetype === 'image/png' ? '.png' : file.mimetype === 'image/webp' ? '.webp' : '.jpg';
+      const storedName = `${id}_${crypto.randomUUID()}${extension}`;
+      await fsPromises.writeFile(path.join(store.directory, 'uploads', storedName), file.buffer);
+      savedFiles.push({ storedName, originalName: file.originalname, size: file.size, mimeType: file.mimetype, sort: savedFiles.length + 1 });
+    }
+    await store.transaction(data => {
+      data.weeklyPlans ||= [];
+      const existing = data.weeklyPlans.find(item => item.userId === req.user.id && item.weekStart === weekStart);
+      if (existing) {
+        existing.files = savedFiles;
+        existing.note = text(req.body.note, 300);
+        existing.updatedAt = now();
+      } else {
+        data.weeklyPlans.push({ id, userId: req.user.id, weekStart, note: text(req.body.note, 300), files: savedFiles, createdAt: now(), updatedAt: now() });
+      }
+      addAudit(data, req.user.id, 'WEEKLY_PLAN_UPLOADED', 'WEEKLY_PLAN', existing?.id || id, '上传每周计划照片', null, { weekStart, fileCount: savedFiles.length });
+    });
+    const saved = store.data.weeklyPlans.find(item => item.userId === req.user.id && item.weekStart === weekStart);
+    send(res, { ...saved, user: publicUser(req.user) }, 201);
+  }));
+  app.delete('/api/weekly-plans/:id', auth, asyncRoute(async (req, res) => {
+    const plan = store.data.weeklyPlans.find(item => item.id === req.params.id);
+    if (!plan) fail(404, '每周计划不存在', 'NOT_FOUND');
+    if (plan.userId !== req.user.id) fail(403, '只能删除自己的每周计划', 'FORBIDDEN');
+    await store.transaction(data => {
+      data.weeklyPlans = data.weeklyPlans.filter(item => item.id !== plan.id);
+      addAudit(data, req.user.id, 'WEEKLY_PLAN_DELETED', 'WEEKLY_PLAN', plan.id, '删除每周计划照片', null, { weekStart: plan.weekStart });
+    });
+    await Promise.all((plan.files || []).map(file => fsPromises.rm(path.join(store.directory, 'uploads', file.storedName), { force: true })));
+    send(res, { id: plan.id, deleted: true });
+  }));
+  app.get('/api/weekly-plans', auth, (req, res) => {
+    const weekStart = text(req.query.week, 10) || weekStartOf();
+    const records = store.data.weeklyPlans
+      .filter(item => item.weekStart === weekStart)
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+      .map(plan => ({ ...plan, user: publicUser(store.data.users.find(user => user.id === plan.userId)) }));
+    send(res, { weekStart, plans: records });
+  });
+  app.get('/api/weekly-plans/history/:userId', auth, (req, res) => {
+    if (!ownsOrAdmin(req, req.params.userId)) fail(404, '每周计划不存在或无权查看', 'NOT_FOUND');
+    const user = store.data.users.find(item => item.id === req.params.userId);
+    if (!user) fail(404, '用户不存在', 'NOT_FOUND');
+    const records = store.data.weeklyPlans
+      .filter(item => item.userId === req.params.userId)
+      .sort((a, b) => b.weekStart.localeCompare(a.weekStart));
+    send(res, { user: publicUser(user), plans: records });
+  });
+  app.get('/api/weekly-plans/archive', auth, (req, res) => {
+    const records = store.data.weeklyPlans
+      .filter(item => store.data.users.find(user => user.id === item.userId)?.role === 'STUDENT')
+      .sort((a, b) => b.weekStart.localeCompare(a.weekStart) || b.updatedAt.localeCompare(a.updatedAt))
+      .map(plan => ({ ...plan, user: publicUser(store.data.users.find(user => user.id === plan.userId)) }));
+    send(res, { plans: records });
+  });
+
+  const taskUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 8 * 1024 * 1024, files: 4 }, fileFilter: (req, file, callback) => {
+    const allowed = ['image/jpeg', 'image/png', 'image/webp'];
+    callback(allowed.includes(file.mimetype) ? null : new HttpError(400, '仅支持 JPG、PNG、WebP 图片', 'INVALID_FILE_TYPE'), allowed.includes(file.mimetype));
+  } });
+  const taskVisibleTo = (task, user) => {
+    if (user.role === 'ADMIN') return true;
+    if (user.role !== 'STUDENT') return false;
+    return !task.recipients?.length || task.recipients.includes(user.id);
+  };
+  const taskStudentsOf = task => store.data.users.filter(user => user.role === 'STUDENT' && user.status === 'ACTIVE' && (!task.recipients?.length || task.recipients.includes(user.id)));
+  const taskSummary = task => {
+    const subject = store.data.subjects.find(item => item.id === task.subjectId);
+    return {
+      ...task,
+      subject: subject ? { id: subject.id, name: subject.name, color: subject.color } : null,
+      subItems: (task.subItemIds || []).map(id => {
+        const subItem = subject?.subItems.find(item => item.id === id);
+        return subItem ? { id: subItem.id, name: subItem.name } : null;
+      }).filter(Boolean),
+      statuses: (store.data.taskStatuses || []).filter(item => item.taskId === task.id).map(item => ({ userId: item.userId, status: item.status, updatedAt: item.updatedAt, submittedAt: item.submittedAt || null, files: item.files || [] })),
+      students: taskStudentsOf(task).map(user => publicUser(user))
+    };
+  };
+  app.post('/api/tasks', auth, adminOnly, taskUpload.array('files', 4), asyncRoute(async (req, res) => {
+    const subject = store.data.subjects.find(item => item.id === req.body.subjectId);
+    if (!subject) fail(400, '请选择有效科目', 'INVALID_SUBJECT');
+    let subItemIds = [];
+    try { subItemIds = JSON.parse(req.body.subItemIds || '[]'); } catch { subItemIds = []; }
+    const validSubItems = Array.isArray(subItemIds) ? subItemIds.filter(id => subject.subItems.some(item => item.id === id && item.status === 'ENABLED')) : [];
+    if (!req.files?.length) fail(400, '请上传任务题目图片', 'MISSING_FILE');
+    const deadlineRaw = text(req.body.deadline, 30);
+    const deadline = deadlineRaw ? new Date(deadlineRaw) : null;
+    if (!deadline || Number.isNaN(deadline.getTime())) fail(400, '请设置有效的截止时间', 'INVALID_DEADLINE');
+    let recipients = [];
+    try { recipients = JSON.parse(req.body.recipients || '[]'); } catch { recipients = []; }
+    recipients = Array.isArray(recipients) ? recipients.filter(id => store.data.users.some(user => user.id === id && user.role === 'STUDENT')) : [];
+    const id = uid('task');
+    const savedFiles = [];
+    for (const file of req.files) {
+      const extension = file.mimetype === 'image/png' ? '.png' : file.mimetype === 'image/webp' ? '.webp' : '.jpg';
+      const storedName = `${id}_${crypto.randomUUID()}${extension}`;
+      await fsPromises.writeFile(path.join(store.directory, 'uploads', storedName), file.buffer);
+      savedFiles.push({ storedName, originalName: file.originalname, size: file.size, mimeType: file.mimetype, sort: savedFiles.length + 1 });
+    }
+    await store.transaction(data => {
+      data.tasks ||= [];
+      data.tasks.push({ id, subjectId: subject.id, subItemIds: validSubItems, note: text(req.body.note, 300), deadline: deadline.toISOString(), recipients, files: savedFiles, createdBy: req.user.id, createdAt: now() });
+      addAudit(data, req.user.id, 'TASK_PUBLISHED', 'TASK', id, text(req.body.note, 120) || '发布任务', null, { subjectId: subject.id, subItems: validSubItems.length, recipients: recipients.length || '全部学生', deadline: deadline.toISOString() });
+    });
+    send(res, taskSummary(store.data.tasks.find(item => item.id === id)), 201);
+  }));
+  app.get('/api/tasks', auth, (req, res) => {
+    const records = store.data.tasks.filter(task => taskVisibleTo(task, req.user))
+      .sort((a, b) => new Date(a.deadline) - new Date(b.deadline))
+      .map(taskSummary);
+    send(res, records);
+  });
+  app.get('/api/tasks/:id/files/:fileIndex', auth, (req, res) => {
+    const task = store.data.tasks.find(item => item.id === req.params.id);
+    if (!task || !taskVisibleTo(task, req.user)) fail(404, '任务不存在或无权查看', 'NOT_FOUND');
+    const file = task.files?.[Number(req.params.fileIndex)];
+    if (!file) fail(404, '任务图片不存在', 'NOT_FOUND');
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.sendFile(path.join(store.directory, 'uploads', file.storedName));
+  });
+  app.post('/api/tasks/:id/submission', auth, taskUpload.array('files', 4), asyncRoute(async (req, res) => {
+    const task = store.data.tasks.find(item => item.id === req.params.id);
+    if (!task || !taskVisibleTo(task, req.user) || req.user.role !== 'STUDENT') fail(404, '任务不存在或无权操作', 'NOT_FOUND');
+    if (!req.files?.length) fail(400, '请上传答案图片', 'MISSING_FILE');
+    const savedFiles = [];
+    for (const file of req.files) {
+      const extension = file.mimetype === 'image/png' ? '.png' : file.mimetype === 'image/webp' ? '.webp' : '.jpg';
+      const storedName = `${task.id}_${req.user.id}_${crypto.randomUUID()}${extension}`;
+      await fsPromises.writeFile(path.join(store.directory, 'uploads', storedName), file.buffer);
+      savedFiles.push({ storedName, originalName: file.originalname, size: file.size, mimeType: file.mimetype });
+    }
+    let oldFiles = [];
+    let record = null;
+    await store.transaction(data => {
+      data.taskStatuses ||= [];
+      const existing = data.taskStatuses.find(item => item.taskId === task.id && item.userId === req.user.id);
+      if (existing) {
+        oldFiles = existing.files || [];
+        existing.status = 'SUBMITTED';
+        existing.files = savedFiles;
+        existing.submittedAt = now();
+        existing.updatedAt = now();
+        record = existing;
+      } else {
+        record = { taskId: task.id, userId: req.user.id, status: 'SUBMITTED', files: savedFiles, submittedAt: now(), updatedAt: now() };
+        data.taskStatuses.push(record);
+      }
+      addAudit(data, req.user.id, 'TASK_SUBMISSION', 'TASK', task.id, '提交任务答案', null, { files: savedFiles.length });
+    });
+    await Promise.all(oldFiles.map(file => fsPromises.rm(path.join(store.directory, 'uploads', file.storedName), { force: true })));
+    send(res, { taskId: task.id, userId: req.user.id, status: 'SUBMITTED', files: savedFiles, submittedAt: record.submittedAt });
+  }));
+  app.get('/api/tasks/:id/answers/:userId/:fileIndex', auth, (req, res) => {
+    const task = store.data.tasks.find(item => item.id === req.params.id);
+    if (!task || !taskVisibleTo(task, req.user)) fail(404, '任务不存在或无权查看', 'NOT_FOUND');
+    const record = (store.data.taskStatuses || []).find(item => item.taskId === task.id && item.userId === req.params.userId);
+    if (!record) fail(404, '该用户还没有提交答案', 'NOT_FOUND');
+    if (req.user.role !== 'ADMIN' && req.user.id !== req.params.userId) fail(403, '只能查看自己的答案', 'FORBIDDEN');
+    const file = record.files?.[Number(req.params.fileIndex)];
+    if (!file) fail(404, '答案图片不存在', 'NOT_FOUND');
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.sendFile(path.join(store.directory, 'uploads', file.storedName));
+  });
+  app.post('/api/tasks/:id/grade', auth, adminOnly, asyncRoute(async (req, res) => {
+    const task = store.data.tasks.find(item => item.id === req.params.id);
+    if (!task) fail(404, '任务不存在', 'NOT_FOUND');
+    const targetUser = store.data.users.find(item => item.id === req.body.userId);
+    if (!targetUser || targetUser.role !== 'STUDENT') fail(400, '判卷对象无效', 'INVALID_USER');
+    const result = req.body.result;
+    if (!['DONE', 'PENDING'].includes(result)) fail(400, '判卷结果无效', 'INVALID_RESULT');
+    await store.transaction(data => {
+      data.taskStatuses ||= [];
+      const existing = data.taskStatuses.find(item => item.taskId === task.id && item.userId === targetUser.id);
+      if (existing) {
+        existing.status = result;
+        existing.updatedAt = now();
+      } else {
+        data.taskStatuses.push({ taskId: task.id, userId: targetUser.id, status: result, updatedAt: now() });
+      }
+      addAudit(data, req.user.id, 'TASK_GRADED', 'TASK', task.id, result === 'DONE' ? '判卷：答对了' : '判卷：退回待完成', targetUser.id, { result });
+    });
+    send(res, { taskId: task.id, userId: targetUser.id, status: result });
+  }));
+  app.delete('/api/tasks/:id', auth, adminOnly, asyncRoute(async (req, res) => {
+    const task = store.data.tasks.find(item => item.id === req.params.id);
+    if (!task) fail(404, '任务不存在', 'NOT_FOUND');
+    await store.transaction(data => {
+      data.tasks = data.tasks.filter(item => item.id !== task.id);
+      data.taskStatuses = (data.taskStatuses || []).filter(item => item.taskId !== task.id);
+      addAudit(data, req.user.id, 'TASK_DELETED', 'TASK', task.id, '删除任务', null, { subjectId: task.subjectId });
+    });
+    await Promise.all((task.files || []).map(file => fsPromises.rm(path.join(store.directory, 'uploads', file.storedName), { force: true })));
+    send(res, { id: task.id, deleted: true });
+  }));
+  app.get('/api/weekly-plans/:id/files/:fileIndex', auth, (req, res) => {
+    const plan = store.data.weeklyPlans.find(item => item.id === req.params.id);
+    if (!plan) fail(404, '每周计划不存在', 'NOT_FOUND');
+    const file = plan.files?.[Number(req.params.fileIndex)];
+    if (!file) fail(404, '计划图片不存在', 'NOT_FOUND');
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.sendFile(path.join(store.directory, 'uploads', file.storedName));
+  });
+  app.post('/api/point-requests', auth, asyncRoute(async (req, res) => {
+    if (req.user.role !== 'STUDENT') fail(403, '仅学生可申请积分', 'FORBIDDEN');
+    const points = Number(req.body.points);
+    if (!Number.isInteger(points) || points < 1 || points > 5) fail(400, '申请积分需为 1-5 的整数', 'INVALID_POINTS');
+    const reason = text(req.body.reason, 300);
+    if (!reason) fail(400, '请填写本周完成情况的申请理由', 'MISSING_REASON');
+    const requestedWeek = text(req.body.weekStart, 10);
+    const weekStart = requestedWeek && /^\d{4}-\d{2}-\d{2}$/.test(requestedWeek) ? weekStartOf(new Date(`${requestedWeek}T00:00:00Z`)) : weekStartOf();
+    if (weekStart > weekStartOf()) fail(400, '不能为未来周申请积分', 'INVALID_WEEK');
+    const existing = store.data.pointRequests.find(item => item.userId === req.user.id && item.weekStart === weekStart && ['PENDING', 'APPROVED'].includes(item.status));
+    if (existing) fail(409, existing.status === 'PENDING' ? '本周申请已在等待管理员确认' : '本周积分已确认，不能重复申请', 'DUPLICATE_REQUEST');
+    const id = uid('point');
+    await store.transaction(data => {
+      data.pointRequests ||= [];
+      data.pointRequests.push({ id, userId: req.user.id, weekStart, points, reason, status: 'PENDING', reviewerId: null, reviewReason: '', reviewedAt: null, createdAt: now() });
+      addAudit(data, req.user.id, 'POINT_REQUEST_SUBMITTED', 'POINT_REQUEST', id, reason, null, { weekStart, points });
+    });
+    send(res, store.data.pointRequests.find(item => item.id === id), 201);
+  }));
+  app.get('/api/point-requests', auth, (req, res) => {
+    const records = store.data.pointRequests
+      .filter(item => req.user.role === 'ADMIN' || item.userId === req.user.id)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .map(item => ({ ...item, user: publicUser(store.data.users.find(user => user.id === item.userId)) }));
+    send(res, records);
+  });
+  app.delete('/api/point-requests/:id', auth, adminOnly, asyncRoute(async (req, res) => {
+    const existing = store.data.pointRequests.find(item => item.id === req.params.id);
+    if (!existing) fail(404, '积分申请不存在', 'NOT_FOUND');
+    await store.transaction(data => {
+      data.pointRequests = data.pointRequests.filter(item => item.id !== existing.id);
+      addAudit(data, req.user.id, 'POINT_REQUEST_DELETED', 'POINT_REQUEST', existing.id, '删除积分记录（脏数据清理）', null, { userId: existing.userId, points: existing.points, weekStart: existing.weekStart, status: existing.status });
+    });
+    send(res, { id: existing.id, deleted: true });
+  }));
+  app.post('/api/point-requests/:id/review', auth, adminOnly, asyncRoute(async (req, res) => {
+    const existing = store.data.pointRequests.find(item => item.id === req.params.id);
+    if (!existing) fail(404, '积分申请不存在', 'NOT_FOUND');
+    if (existing.status !== 'PENDING') fail(409, '该申请已处理', 'INVALID_STATE');
+    const decision = req.body.decision === 'APPROVE' ? 'APPROVED' : req.body.decision === 'REJECT' ? 'REJECTED' : null;
+    if (!decision) fail(400, '审核决定无效', 'INVALID_DECISION');
+    if (decision === 'REJECTED' && !text(req.body.reason)) fail(400, '驳回必须填写原因', 'MISSING_REASON');
+    await store.transaction(data => {
+      const request = data.pointRequests.find(item => item.id === existing.id);
+      request.status = decision;
+      request.reviewerId = req.user.id;
+      request.reviewReason = text(req.body.reason, 300);
+      request.reviewedAt = now();
+      addAudit(data, req.user.id, decision === 'APPROVED' ? 'POINT_REQUEST_APPROVED' : 'POINT_REQUEST_REJECTED', 'POINT_REQUEST', request.id, request.reviewReason || request.reason, null, { userId: request.userId, points: request.points, weekStart: request.weekStart });
+    });
+    send(res, { ...store.data.pointRequests.find(item => item.id === existing.id), user: publicUser(store.data.users.find(user => user.id === existing.userId)) });
+  }));
+  app.get('/api/points/leaderboard', auth, (req, res) => {
+    const weekStart = weekStartOf();
+    const rows = store.data.users
+      .filter(user => user.role === 'STUDENT' && user.status === 'ACTIVE')
+      .map(user => {
+        const approved = store.data.pointRequests.filter(item => item.userId === user.id && item.status === 'APPROVED');
+        return {
+          userId: user.id,
+          displayName: user.displayName,
+          avatarColor: user.avatarColor,
+          weekly: approved.filter(item => item.weekStart === weekStart).reduce((sum, item) => sum + item.points, 0),
+          total: approved.reduce((sum, item) => sum + item.points, 0)
+        };
+      })
+      .sort((a, b) => b.weekly - a.weekly || b.total - a.total || a.displayName.localeCompare(b.displayName, 'zh'));
+    send(res, { weekStart, rows });
+  });
 
   const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024, files: 12 }, fileFilter: (req, file, callback) => {
     const allowed = ['image/jpeg', 'image/png', 'application/pdf'];

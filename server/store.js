@@ -38,6 +38,18 @@ export class Store {
       this.data.group.gapPlanWeeks = this.data.group.gapPlanWeeks || 9;
       await this.persist(this.data);
     }
+    if (!this.data.migrations?.weeklyPointsCollections) {
+      this.data.weeklyPlans ||= [];
+      this.data.pointRequests ||= [];
+      this.data.migrations = { ...(this.data.migrations || {}), weeklyPointsCollections: '2026-11-21' };
+      await this.persist(this.data);
+    }
+    if (!this.data.migrations?.tasksCollections) {
+      this.data.tasks ||= [];
+      this.data.taskStatuses ||= [];
+      this.data.migrations = { ...(this.data.migrations || {}), tasksCollections: '2026-11-22' };
+      await this.persist(this.data);
+    }
     if (!this.data.migrations?.weeklyGapBaseline) {
       const targets = new Map(this.data.targets.filter(item => item.status === 'ACTIVE').map(item => [`${item.userId}:${item.subjectId}`, item]));
       const currentScores = new Map();

@@ -1,7 +1,8 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { X, LoaderCircle, Inbox, CheckCircle2, AlertCircle, BookOpen, Sigma, Languages, Atom, ArrowUpRight } from 'lucide-react';
 import { cn, score, statusName, statusTone } from '../utils.js';
+import { getToken } from '../api.js';
 
 export function Button({ children, variant = 'primary', size = 'md', loading = false, icon: Icon, className, ...props }) {
   return <button className={cn('button', `button-${variant}`, `button-${size}`, className)} disabled={loading || props.disabled} {...props}>
@@ -17,6 +18,32 @@ export function Badge({ children, tone, dot = false }) {
   return <span className={cn('badge', `badge-${tone || 'muted'}`)}>{dot && <i />}{children}</span>;
 }
 export function StatusBadge({ status }) { return <Badge tone={statusTone(status)} dot>{statusName(status)}</Badge>; }
+
+export function PlanImage({ planId, index }) {
+  const [url, setUrl] = useState(null);
+  const [zoom, setZoom] = useState(false);
+  useEffect(() => {
+    let active = true;
+    fetch(`/api/weekly-plans/${planId}/files/${index}`, { headers: { Authorization: `Bearer ${getToken()}` } })
+      .then(response => response.ok ? response.blob() : Promise.reject(new Error('图片加载失败')))
+      .then(blob => { if (active) setUrl(URL.createObjectURL(blob)); })
+      .catch(() => {});
+    return () => { active = false; };
+  }, [planId, index]);
+  useEffect(() => {
+    if (!zoom) return;
+    const onKey = event => { if (event.key === 'Escape') setZoom(false); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [zoom]);
+  return <>
+    {url ? <img className="plan-image zoomable" src={url} alt="每周计划照片" onClick={() => setZoom(true)} /> : <div className="plan-image loading" />}
+    {zoom && url && createPortal(<div className="image-viewer" onClick={() => setZoom(false)}>
+      <img src={url} alt="每周计划照片大图" onClick={event => event.stopPropagation()} />
+      <button className="image-viewer-close" onClick={() => setZoom(false)} aria-label="关闭大图"><X size={22} /></button>
+    </div>, document.body)}
+  </>;
+}
 
 export function SubItemScoreList({ items }) {
   if (!items?.length) return null;

@@ -31,13 +31,15 @@ test('总进度只汇总完整且相同的科目集合', () => {
   assert.equal(result.complete, false);
 });
 
-test('不同满分标准化，不同试卷不可比', () => {
+test('不同满分标准化；分项/试卷口径不同仍按总分可比', () => {
   const a = { code: 'MATH', fullScore: 100 };
   const b = { code: 'MATH', fullScore: 120 };
   const x = { comparisonGroup: 'one', occurredAt: '2026-11-01' };
   const y = { comparisonGroup: 'one', occurredAt: '2026-11-03' };
   assert.equal(comparisonMode(a, b, x, y).mode, 'STANDARDIZED');
-  assert.equal(comparisonMode(a, a, x, { ...y, comparisonGroup: 'two' }).comparable, false);
+  const crossGroup = comparisonMode(a, a, x, { ...y, comparisonGroup: 'two' });
+  assert.equal(crossGroup.comparable, true);
+  assert.equal(crossGroup.mode, 'RAW');
 });
 
 test('成绩范围校验允许 0，拒绝空值和超满分', () => {

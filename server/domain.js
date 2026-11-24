@@ -110,13 +110,12 @@ export function gapBurnDownPlan(initialGap, { startDate = new Date(), totalWeeks
 }
 
 export function comparisonMode(subjectA, subjectB, assessmentA, assessmentB, now = new Date()) {
-  if (!subjectA || !subjectB || subjectA.code !== subjectB.code) return { comparable: false, mode: 'INCOMPARABLE', reason: '需要相同科目与可映射的分项结构' };
-  if (!assessmentA || !assessmentB) return { comparable: false, mode: 'MISSING', reason: '待录入同口径成绩后再比较' };
-  if (assessmentA.comparisonGroup !== assessmentB.comparisonGroup) return { comparable: false, mode: 'INCOMPARABLE', reason: '试卷或评估口径不同，暂不支持直接比较' };
+  if (!subjectA || !subjectB || subjectA.code !== subjectB.code) return { comparable: false, mode: 'INCOMPARABLE', reason: '需要相同科目' };
+  if (!assessmentA || !assessmentB) return { comparable: false, mode: 'MISSING', reason: '待录入成绩后再比较' };
   const days = Math.abs(new Date(assessmentA.occurredAt) - new Date(assessmentB.occurredAt)) / 86400000;
   if (days > 31) return { comparable: false, mode: 'INCOMPARABLE', reason: '考试日期相差超过小组设定的 31 天窗口' };
-  if (Number(subjectA.fullScore) !== Number(subjectB.fullScore)) return { comparable: true, mode: 'STANDARDIZED', reason: '满分不同，已转换为得分率与目标达成率' };
-  return { comparable: true, mode: 'RAW', reason: '同科目、同满分、同评估口径' };
+  if (Number(subjectA.fullScore) !== Number(subjectB.fullScore)) return { comparable: true, mode: 'STANDARDIZED', reason: '试卷分项口径不同，按各科总分对比；满分不同时已转换为得分率与目标达成率' };
+  return { comparable: true, mode: 'RAW', reason: '按各科总分对比（分项分数仅供参考，不参与比较）' };
 }
 
 export function scoreRate(score, fullScore) {

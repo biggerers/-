@@ -168,6 +168,21 @@ export function buildDashboard(data, userId) {
       };
     });
   const actions = weeklyRows;
+  const mustTasks = (data.tasks || [])
+    .filter(task => (!task.recipients?.length || task.recipients.includes(userId)) && new Date(task.deadline) >= new Date())
+    .sort((a, b) => new Date(a.deadline) - new Date(b.deadline))
+    .map(task => {
+      const subject = data.subjects.find(item => item.id === task.subjectId);
+      return {
+        id: task.id,
+        subjectName: subject?.name || task.subjectId,
+        subItemNames: (task.subItemIds || []).map(id => subject?.subItems.find(item => item.id === id)?.name).filter(Boolean),
+        note: task.note || '',
+        deadline: task.deadline,
+        fileCount: task.files?.length || 0,
+        myStatus: (data.taskStatuses || []).find(item => item.taskId === task.id && item.userId === userId)?.status || 'PENDING'
+      };
+    });
   return {
     user: publicUser(user),
     group: data.group,
@@ -178,6 +193,7 @@ export function buildDashboard(data, userId) {
     gapTrend: buildGapTrend(data),
     focusSubject: lowestProgressRow ? { subjectId: lowestProgressRow.subjectId, name: lowestProgressRow.name, color: lowestProgressRow.color, rate: lowestProgressRow.rate, weakSubItem: lowestProgressRow.weakSubItem } : null,
     actions,
+    mustTasks,
     pendingRequests: data.scoreRequests.filter(item => item.userId === userId && item.status === 'PENDING').length,
     recentAssessments: data.assessments.filter(item => item.userId === userId && item.kind !== 'BASELINE').sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 6),
     generatedAt: new Date().toISOString()
@@ -186,28 +202,40 @@ export function buildDashboard(data, userId) {
 
 export function buildGapTrend(data) {
   const examWeekEnd = data.group.examWeekEnd || '2027-01-17';
-  const samplePlan = gapBurnDownPlan(100, { startDate: data.group.gapPlanStart || '2026-11-20', totalWeeks: data.group.gapPlanWeeks || 9, examWeekEnd });
-  const reference = samplePlan ? samplePlan.points.map(point => ({ week: point.week, weekStart: point.weekStart, label: point.label, type: point.type, isExamWeek: point.isExamWeek, percent: point.percent })) : [];
-  const today = new Date();
+  const planStart = data.group.gapPlanStart || '2026-11-20';
+  const totalWeeks = data.group.gapPlanWeeks || 9;
+  const shanghaiDay = value => new Date(new Date(value).getTime() + 8 * 3600 * 1000).toISOString().slice(0, 10);
+  const today = shanghaiDay(new Date());
+  const weeks = (gapBurnDownPlan(100, { startDate: planStart, totalWeeks, examWeekEnd })?.points || [])
+    .map(point => ({ week: point.week, weekStart: point.weekStart, label: point.label, type: point.type, isExamWeek: point.isExamWeek, percent: point.percent }));
+  const days = [];
+  for (let cursor = new Date(`${planStart}T00:00:00Z`); cursor.toISOString().slice(0, 10) <= examWeekEnd; cursor.setUTCDate(cursor.getUTCDate() + 1)) {
+    const date = cursor.toISOString().slice(0, 10);
+    days.push({ date, label: date.slice(5).replace('-', '.') });
+  }
+  const planDays = Math.max(1, Math.round((new Date(`${examWeekEnd}T00:00:00Z`) - new Date(`${planStart}T00:00:00Z`)) / 86400000));
+  const weekStartSet = new Map(weeks.map(item => [item.weekStart, item]));
+  const reference = days.map(day => {
+    if (day.date < planStart) return { ...day, percent: null, week: null };
+    const ratio = (new Date(`${day.date}T00:00:00Z`) - new Date(`${planStart}T00:00:00Z`)) / 86400000 / planDays;
+    return { ...day, week: weekStartSet.get(day.date) || null, percent: Math.round(Math.min(100, Math.max(0, ratio)) * 1000) / 10 };
+  });
   const students = data.users.filter(user => user.role === 'STUDENT' && user.status === 'ACTIVE').map(user => {
     const subjects = data.subjects.filter(item => item.status === 'ENABLED');
     const targets = new Map(subjects.map(subject => [subject.id, activeTarget(data, user.id, subject.id)]));
-    const summary = totalProgress(subjects.map(subject => subjectProgress(data, user.id, subject)));
-    const initialGap = summary.baseline != null && summary.target != null ? Math.max(0, Number(summary.target) - Number(summary.baseline)) : null;
     return {
       userId: user.id,
       displayName: user.displayName,
       color: user.avatarColor || '#0b8f87',
-      points: reference.map(point => {
-        if (new Date(point.weekStart) > today || initialGap == null) return { ...point, percent: null };
+      points: days.map(day => {
+        if (day.date > today) return { ...day, percent: null, week: weekStartSet.get(day.date) || null };
         let baselineTotal = 0; let currentTotal = 0; let targetTotal = 0; let complete = true;
         for (const subject of subjects) {
           const target = targets.get(subject.id);
           if (!target || target.baselineScore == null || target.targetScore == null) { complete = false; break; }
           const latest = data.assessments
-            .filter(item => item.userId === user.id && item.subjectId === subject.id && item.status === 'EFFECTIVE' && item.kind !== 'BASELINE')
-            .filter(item => new Date(item.occurredAt) <= new Date(`${point.weekStart}T23:59:59.000Z`))
-            .sort((a, b) => new Date(b.occurredAt) - new Date(a.occurredAt) || new Date(b.createdAt) - new Date(a.createdAt))[0];
+            .filter(item => item.userId === user.id && item.subjectId === subject.id && item.status === 'EFFECTIVE' && item.kind !== 'BASELINE' && shanghaiDay(item.createdAt) <= day.date)
+            .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
           const score = latest?.score ?? target.baselineScore;
           if (!Number.isFinite(Number(score))) { complete = false; break; }
           baselineTotal += Number(target.baselineScore);
@@ -215,19 +243,11 @@ export function buildGapTrend(data) {
           targetTotal += Number(target.targetScore);
         }
         const denominator = targetTotal - baselineTotal;
-        return { ...point, percent: complete && denominator > 0 ? Math.max(0, Math.min(100, round1((currentTotal - baselineTotal) / denominator * 100))) : null };
+        return { ...day, week: weekStartSet.get(day.date) || null, percent: complete && denominator > 0 ? Math.max(0, Math.min(100, round1((currentTotal - baselineTotal) / denominator * 100))) : null };
       })
     };
   });
-  return {
-    startWeek: reference[0]?.weekStart ?? null,
-    examWeekStart: reference.at(-1)?.weekStart ?? null,
-    examWeekEnd,
-    totalWeeks: reference.length,
-    weeks: reference,
-    reference,
-    students
-  };
+  return { planStart, examWeekEnd, today, totalWeeks: weeks.length, days, weeks, reference, students };
 }
 
 export function availableQuestions(data, userId, filters = {}) {

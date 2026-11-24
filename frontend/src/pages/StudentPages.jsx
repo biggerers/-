@@ -1,8 +1,9 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowRight, ArrowUpRight, BookMarked, CalendarDays, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Circle, CircleHelp, Clock3, Download, FileCheck2, FileText, Filter, Flag, Flower2, FolderUp, GripVertical, ImagePlus, Info, Lightbulb, LockKeyhole, MessageCircleHeart, Mic, MoreHorizontal, Paperclip, Plus, RefreshCw, RotateCcw, Send, ShieldCheck, Sparkles, Target, Trash2, TrendingDown, TrendingUp, UploadCloud, UserRound, Users, WandSparkles, X } from 'lucide-react';
-import { api, downloadFile } from '../api.js';
-import { cn, date, difficultyName, percent, score, sourceName, statusName, today } from '../utils.js';
-import { Avatar, Badge, Button, EmptyState, ErrorState, Field, InlineLink, MetricCard, Modal, PageLoading, ProgressBar, SectionHeader, StatusBadge, SubjectIcon } from '../components/UI.jsx';
+import { createPortal } from 'react-dom';
+import { ArrowRight, ArrowUpRight, BookMarked, CalendarDays, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Circle, Clock3, Download, FileCheck2, FileText, Filter, Flag, Flower2, FolderUp, GripVertical, History, ImagePlus, Info, Lightbulb, ListChecks, LockKeyhole, Mic, MoreHorizontal, Paperclip, Plus, RefreshCw, RotateCcw, Send, ShieldCheck, Sparkles, Target, Trash2, TrendingDown, TrendingUp, Trophy, UploadCloud, UserRound, Users, WandSparkles, X } from 'lucide-react';
+import { api, downloadFile, getToken } from '../api.js';
+import { cn, compressImage, date, difficultyName, percent, score, sourceName, statusName, today } from '../utils.js';
+import { Avatar, Badge, Button, EmptyState, ErrorState, Field, InlineLink, MetricCard, Modal, PageLoading, PlanImage, ProgressBar, SectionHeader, StatusBadge, SubjectIcon } from '../components/UI.jsx';
 import GapTrendCard from '../components/GapTrendCard.jsx';
 
 export function ScoreRequestModal({ subject, onClose, onSuccess }) {
@@ -53,11 +54,14 @@ export function DashboardPage({ bootstrap, navigate, openScore, openPractice }) 
         <div className="hero-main"><ProgressRing value={data.summary.displayRate} /><div className="hero-score"><span>当前总分 <i>口径：已录入 {data.subjects.length} 科</i></span><div><strong>{score(data.summary.current)}</strong><small>/ {score(data.summary.target)} 目标分</small></div><p>期中基准 {score(data.summary.baseline)} 分 <span>·</span> 距目标还差 <b>{score(data.summary.gap)}</b> 分</p></div></div>
         <div className="hero-footer"><div><span>较期中已提升</span><strong>{data.summary.current == null ? '—' : `+${score(Math.max(0, data.summary.current - data.summary.baseline))}`} 分</strong></div><div><span>目标差距</span><strong>{score(data.summary.gap)} 分</strong></div><button onClick={() => navigate('scores')}>查看目标明细<ArrowUpRight size={16} /></button></div>
       </article>
-      <article className="weekly-card card">
-        <div className="card-topline"><div><span className="eyebrow">WEEKLY PROGRESS</span><h3>本周，差距在缩小</h3></div><span className={cn('trend-icon', data.weekly.shrinkRate < 0 && 'negative')}>{data.weekly.shrinkRate < 0 ? <TrendingDown size={20} /> : <TrendingUp size={20} />}</span></div>
-        <div className="weekly-highlight"><strong>{data.weekly.shrinkRate == null ? '—' : Math.abs(data.weekly.shrinkRate)}<small>%</small></strong><Badge tone={data.weekly.shrinkRate < 0 ? 'danger' : 'success'}>{data.weekly.shrinkRate == null ? '暂无可比快照' : data.weekly.shrinkRate < 0 ? '差距扩大' : '差距缩小'}</Badge></div>
-        <div className="gap-compare"><div><span>上周差距</span><b>{score(data.weekly.previousGap)} 分</b></div><ArrowRight size={19} /><div><span>当前差距</span><b>{score(data.weekly.currentGap)} 分</b></div></div>
-        <div className="weekly-bottom"><span><CheckCircle2 size={16} />本周有效闭环 <b>{data.weekly.closureCount}</b> 次</span><button title="周差距缩小率 =（上周差距－当前差距）÷上周差距"><CircleHelp size={16} /></button></div>
+      <article className="weekly-card card must-tasks-card">
+        <div className="card-topline"><div><span className="eyebrow">MUST DO</span><h3>本周必做 · 任务区</h3></div><button className="text-button" onClick={() => navigate('task')}>进入任务页<ChevronRight size={15} /></button></div>
+        {data.mustTasks?.length ? <div className="must-task-list">{data.mustTasks.map(task => <div className="must-task-row" key={task.id} onClick={() => navigate('task')}>
+          <b>{task.subjectName}</b>
+          <span className="must-task-sub">{task.subItemNames.length ? task.subItemNames.join('、') : '通用练习'}</span>
+          <Badge tone={new Date(task.deadline) < new Date() ? 'danger' : 'warning'}><Clock3 size={12} />{remainingLabel(task.deadline)}</Badge>
+          <Badge tone={task.myStatus === 'DONE' ? 'success' : task.myStatus === 'PENDING' ? 'muted' : 'blue'}>{taskStatusName(task.myStatus)}</Badge>
+        </div>)}</div> : <EmptyState icon={ListChecks} title="暂无必做任务" description="老师发布任务后会出现在这里。" />}
       </article>
     </section>
 
@@ -75,10 +79,7 @@ export function DashboardPage({ bootstrap, navigate, openScore, openPractice }) 
       </article>)}
     </section>
 
-    <section className="dashboard-bottom-grid">
-      <article className="card action-card"><SectionHeader title="本周必做" description="按差距比例和期末计划线生成分项建议；完成由你确认。" action={<Lightbulb size={21} className="accent-icon" />} /><div className="action-list">{data.actions.length ? data.actions.map((action, index) => <div className={cn('action-item', done.includes(action.id) && 'action-done')} key={action.id}><button className="check-action" onClick={() => setDone(value => value.includes(action.id) ? value.filter(id => id !== action.id) : [...value, action.id])}>{done.includes(action.id) ? <CheckCircle2 size={21} /> : <Circle size={21} />}</button><div><div className="action-title-line"><b>{action.title}</b><div className="tag-row">{(action.tags || []).map(tag => <Badge key={tag} tone={tag === 'GAP_RATIO_LOW' ? 'warning' : 'blue'}>{tag === 'GAP_RATIO_LOW' ? '单科差距比例最低' : '落后计划'}</Badge>)}</div></div><p>{action.description}</p></div><span className="action-index">0{index + 1}</span></div>) : <EmptyState icon={Flag} title="本周暂无必做科目" description="可以先复盘一个错因，或给同伴一个提示。" />}</div></article>
-      <article className="card peer-teaser"><div className="peer-illustration"><div className="peer-avatar p1">王</div><div className="peer-avatar p2">张</div><div className="peer-avatar p3">朱</div><span className="peer-line line1" /><span className="peer-line line2" /><MessageCircleHeart size={28} /></div><Badge tone="soft">三人共学共同体</Badge><h3>各自有目标，彼此有方法</h3><p>看看同科伙伴本周的进步，分享一个错因与一个解法。没有名次，也不必比较起点。</p><Button variant="secondary" onClick={() => navigate('scores')}>查看同伴进步<ArrowRight size={16} /></Button><div className="peer-safe"><ShieldCheck size={14} />原始试卷与私人备注互不可见</div></article>
-    </section>
+    <article className="card action-card"><SectionHeader title="本周必做" description="按差距比例和期末计划线生成分项建议；完成由你确认。" action={<Lightbulb size={21} className="accent-icon" />} /><div className="action-list">{data.actions.length ? data.actions.map((action, index) => <div className={cn('action-item', done.includes(action.id) && 'action-done')} key={action.id}><button className="check-action" onClick={() => setDone(value => value.includes(action.id) ? value.filter(id => id !== action.id) : [...value, action.id])}>{done.includes(action.id) ? <CheckCircle2 size={21} /> : <Circle size={21} />}</button><div><div className="action-title-line"><b>{action.title}</b><div className="tag-row">{(action.tags || []).map(tag => <Badge key={tag} tone={tag === 'GAP_RATIO_LOW' ? 'warning' : 'blue'}>{tag === 'GAP_RATIO_LOW' ? '单科差距比例最低' : '落后计划'}</Badge>)}</div></div><p>{action.description}</p></div><span className="action-index">0{index + 1}</span></div>) : <EmptyState icon={Flag} title="本周暂无必做科目" description="可以先复盘一个错因，或给同伴一个提示。" />}</div></article>
     <p className="data-footnote"><Info size={13} />数据更新于 {date(data.generatedAt, true)} · 当前成绩仅取已生效记录，AI 建议不会自动入账。</p>
   </div>;
 }
@@ -215,4 +216,304 @@ export function SettingsPage({ bootstrap, onUserChange, notify }) {
   const preference = async value => { setShowAbsolute(value); try { const result = await api('/api/me/preferences', { method: 'PATCH', body: { showAbsoluteScores: value } }); onUserChange(result.user); notify(value ? '已开启同口径绝对分展示' : '已切换为仅看进步，个人功能不受影响'); } catch (err) { setShowAbsolute(!value); notify(err.message, 'error'); } };
   const changePassword = async event => { event.preventDefault(); if (form.newPassword !== form.confirm) { notify('两次输入的新密码不一致', 'error'); return; } setSaving(true); try { const result = await api('/api/auth/password', { method: 'POST', body: form }); setForm({ oldPassword: '', newPassword: '', confirm: '' }); notify(result.message); } catch (err) { notify(err.message, 'error'); } finally { setSaving(false); } };
   return <div className="page-enter settings-page"><div className="page-title-row"><div><h1>个人设置</h1><p>管理你的账号、对比偏好和数据边界。</p></div></div><section className="settings-grid"><article className="card profile-card"><div className="profile-cover" /><Avatar user={bootstrap.user} size="xl" /><h2>{bootstrap.user.displayName}</h2><p>@{bootstrap.user.account}</p><Badge tone="soft">{bootstrap.group.name}</Badge><dl><div><dt>当前学期</dt><dd>{bootstrap.group.term}</dd></div><div><dt>账号角色</dt><dd>学生</dd></div><div><dt>周快照</dt><dd>{bootstrap.group.snapshotTime}</dd></div></dl></article><div className="settings-main"><article className="card setting-section"><div className="setting-heading"><span><Users size={20} /></span><div><h3>同伴对比偏好</h3><p>你可以随时暂停绝对分展示，不影响成绩、练习和上传。</p></div></div><label className="switch-row"><span><b>显示同口径同伴绝对分</b><small>关闭后，服务端不会返回同伴的当前分数与满分</small></span><input type="checkbox" checked={showAbsolute} onChange={e => preference(e.target.checked)} /><i /></label><div className="soft-note"><ShieldCheck size={16} /><p>无论是否开启，同伴原始试卷、私人备注和账号信息都不可见。</p></div></article><article className="card setting-section"><div className="setting-heading"><span><LockKeyhole size={20} /></span><div><h3>修改登录密码</h3><p>至少 8 位，同时包含字母和数字；修改后其他会话自动退出。</p></div></div><form onSubmit={changePassword} className="form-grid"><Field label="当前密码" required><input type="password" value={form.oldPassword} onChange={e => setForm({ ...form, oldPassword: e.target.value })} required autoComplete="current-password" /></Field><div className="grid-2"><Field label="新密码" required><input type="password" value={form.newPassword} onChange={e => setForm({ ...form, newPassword: e.target.value })} required autoComplete="new-password" /></Field><Field label="确认新密码" required><input type="password" value={form.confirm} onChange={e => setForm({ ...form, confirm: e.target.value })} required autoComplete="new-password" /></Field></div><div><Button type="submit" loading={saving}>保存新密码</Button></div></form></article><article className="card setting-section"><div className="setting-heading"><span><ShieldCheck size={20} /></span><div><h3>数据与 AI 说明</h3><p>最小化收集、可追踪审核、不用于公开排名。</p></div></div><ul className="privacy-list"><li><Check size={14} />成绩以正式来源和发生时间留痕，不用空白代替 0 分</li><li><Check size={14} />AI 仅提供建议，管理员复核后才生成新成绩记录</li><li><Check size={14} />当前为演示环境，OCR/LLM 在本地模拟，不发送外部服务</li></ul></article></div></section></div>;
+}
+
+function PointsBoard({ title, rows, meId, metric }) {
+  const sorted = [...rows].sort((a, b) => b[metric] - a[metric] || a.displayName.localeCompare(b.displayName, 'zh'));
+  return <div className="leaderboard"><h3>{title}</h3>{sorted.map((row, index) => <div key={row.userId} className={cn('leaderboard-row', row.userId === meId && 'self')}><span className="leaderboard-rank">{index + 1}</span><div className="user-cell"><Avatar user={row} size="sm" /><b>{row.displayName}{row.userId === meId ? '（我）' : ''}</b></div><strong className="points-value">{row[metric]} 分</strong></div>)}</div>;
+}
+
+const mondayOf = value => {
+  const date = new Date(`${value}T00:00:00Z`);
+  date.setUTCDate(date.getUTCDate() - (date.getUTCDay() + 6) % 7);
+  return date.toISOString().slice(0, 10);
+};
+const weekRangeLabel = weekStart => {
+  const start = new Date(`${weekStart}T00:00:00Z`); const end = new Date(start.getTime() + 6 * 86400000);
+  const fmt = value => `${String(value.getUTCMonth() + 1).padStart(2, '0')}.${String(value.getUTCDate()).padStart(2, '0')}`;
+  return `${fmt(start)} — ${fmt(end)}`;
+};
+export const taskStatusName = value => ({ PENDING: '待完成', SUBMITTED: '审核中', DONE: '答对了', STUCK: '不会', REVIEW: '完成需复习' }[value] || value || '待完成');
+export const remainingLabel = deadline => {
+  const ms = new Date(deadline) - Date.now();
+  if (ms <= 0) return '已超期';
+  const days = Math.floor(ms / 86400000);
+  const hours = Math.floor((ms % 86400000) / 3600000);
+  const minutes = Math.floor((ms % 3600000) / 60000);
+  return days > 0 ? `剩 ${days} 天 ${hours} 小时` : hours > 0 ? `剩 ${hours} 小时 ${minutes} 分` : `剩 ${minutes} 分钟`;
+};
+
+function TaskImage({ taskId, index }) {
+  const [url, setUrl] = useState(null);
+  const [zoom, setZoom] = useState(false);
+  useEffect(() => {
+    let active = true;
+    fetch(`/api/tasks/${taskId}/files/${index}`, { headers: { Authorization: `Bearer ${getToken()}` } })
+      .then(response => response.ok ? response.blob() : Promise.reject(new Error('图片加载失败')))
+      .then(blob => { if (active) setUrl(URL.createObjectURL(blob)); })
+      .catch(() => {});
+    return () => { active = false; };
+  }, [taskId, index]);
+  useEffect(() => {
+    if (!zoom) return;
+    const onKey = event => { if (event.key === 'Escape') setZoom(false); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [zoom]);
+  return <>
+    {url ? <img className="plan-image zoomable" src={url} alt="任务题目图片" onClick={() => setZoom(true)} /> : <div className="plan-image loading" />}
+    {zoom && url && createPortal(<div className="image-viewer" onClick={() => setZoom(false)}>
+      <img src={url} alt="任务题目大图" onClick={event => event.stopPropagation()} />
+      <button className="image-viewer-close" onClick={() => setZoom(false)} aria-label="关闭大图"><X size={22} /></button>
+    </div>, document.body)}
+  </>;
+}
+
+function AnswerImage({ taskId, userId, index, alt = '任务答案图片' }) {
+  const [url, setUrl] = useState(null);
+  const [zoom, setZoom] = useState(false);
+  useEffect(() => {
+    let active = true;
+    fetch(`/api/tasks/${taskId}/answers/${userId}/${index}`, { headers: { Authorization: `Bearer ${getToken()}` } })
+      .then(response => response.ok ? response.blob() : Promise.reject(new Error('答案加载失败')))
+      .then(blob => { if (active) setUrl(URL.createObjectURL(blob)); })
+      .catch(() => {});
+    return () => { active = false; };
+  }, [taskId, userId, index]);
+  useEffect(() => {
+    if (!zoom) return;
+    const onKey = event => { if (event.key === 'Escape') setZoom(false); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [zoom]);
+  return <>
+    {url ? <img className="plan-image zoomable" src={url} alt={alt} onClick={() => setZoom(true)} /> : <div className="plan-image loading" />}
+    {zoom && url && createPortal(<div className="image-viewer" onClick={() => setZoom(false)}>
+      <img src={url} alt={alt} onClick={event => event.stopPropagation()} />
+      <button className="image-viewer-close" onClick={() => setZoom(false)} aria-label="关闭大图"><X size={22} /></button>
+    </div>, document.body)}
+  </>;
+}
+
+export function TaskPage({ bootstrap, notify }) {
+  const me = bootstrap.user;
+  const [tasks, setTasks] = useState(null);
+  const [answers, setAnswers] = useState({});
+  const [previews, setPreviews] = useState({});
+  const [submitting, setSubmitting] = useState(null);
+  const load = useCallback(async () => {
+    try { setTasks(await api('/api/tasks')); }
+    catch (err) { notify(err.message, 'error'); }
+  }, []);
+  useEffect(() => { load(); }, [load]);
+  const statusOf = (task, userId) => (task.statuses || []).find(item => item.userId === userId)?.status || 'PENDING';
+  const recordOf = (task, userId) => (task.statuses || []).find(item => item.userId === userId) || null;
+  const pickAnswers = (taskId, fileList) => {
+    const files = Array.from(fileList || []).slice(0, 4);
+    setAnswers(current => ({ ...current, [taskId]: files }));
+    setPreviews(current => ({ ...current, [taskId]: files.map(file => URL.createObjectURL(file)) }));
+  };
+  const submitAnswers = async task => {
+    const files = answers[task.id];
+    if (!files?.length) { notify('请选择答案图片（1-4 张）', 'error'); return; }
+    setSubmitting(task.id);
+    try {
+      const compressed = await Promise.all(files.map(file => compressImage(file)));
+      const body = new FormData();
+      compressed.forEach(file => body.append('files', file));
+      const result = await api(`/api/tasks/${task.id}/submission`, { method: 'POST', body });
+      setTasks(current => current.map(item => item.id === task.id ? { ...item, statuses: [...(item.statuses || []).filter(s => s.userId !== me.id), { userId: me.id, status: 'SUBMITTED', files: result.files, submittedAt: result.submittedAt, updatedAt: result.submittedAt }] } : item));
+      setAnswers(current => { const next = { ...current }; delete next[task.id]; return next; });
+      setPreviews(current => { const next = { ...current }; delete next[task.id]; return next; });
+      notify('答案已提交，等待管理员判卷');
+    } catch (err) { notify(err.message, 'error'); } finally { setSubmitting(null); }
+  };
+  const active = (tasks || []).filter(task => new Date(task.deadline) >= new Date());
+  const history = (tasks || []).filter(task => new Date(task.deadline) < new Date()).slice().reverse();
+  const groups = [];
+  {
+    const map = new Map();
+    for (const task of active) {
+      const key = task.subject?.name || '通用任务';
+      if (!map.has(key)) map.set(key, []);
+      map.get(key).push(task);
+    }
+    map.forEach((list, name) => groups.push({ name, list }));
+  }
+  const renderTask = (task, overdue = false) => {
+    const myStatus = statusOf(task, me.id);
+    const myRecord = recordOf(task, me.id);
+    const picked = answers[task.id] || [];
+    const previewList = previews[task.id] || [];
+    const statusBadge = <Badge tone={myStatus === 'DONE' ? 'success' : myStatus === 'SUBMITTED' ? 'blue' : 'muted'}>我的状态：{taskStatusName(myStatus)}</Badge>;
+    return <article className={cn('task-row', overdue && 'overdue')} key={task.id}>
+      <div className="task-row-head">
+        {overdue && <b>{task.subject?.name}</b>}
+        {task.subItems.map(item => <Badge key={item.id} tone="blue">{item.name}</Badge>)}
+        {overdue ? <Badge tone="danger">已截止 · {date(task.deadline)}</Badge> : <Badge tone="warning"><Clock3 size={12} />{remainingLabel(task.deadline)}</Badge>}
+        {statusBadge}
+      </div>
+      <div className="plan-images">{task.files.map((file, index) => <TaskImage key={file.storedName} taskId={task.id} index={index} />)}</div>
+      {task.note && <p className="plan-note">{task.note}</p>}
+      {myRecord?.files?.length ? <div className="answer-block"><div className="answer-block-title"><FileCheck2 size={14} />我的答案（{myRecord.files.length} 张{myStatus === 'DONE' ? ' · 已判对' : myStatus === 'SUBMITTED' ? ' · 审核中' : ' · 已退回，可重新提交'}）</div><div className="plan-images">{myRecord.files.map((file, index) => <AnswerImage key={file.storedName} taskId={task.id} userId={me.id} index={index} />)}</div></div> : null}
+      {myStatus !== 'DONE' && <div className="answer-submit">
+        <label className="plan-file-input"><input type="file" accept="image/jpeg,image/png,image/webp" multiple onChange={e => pickAnswers(task.id, e.target.files)} /><span>{picked.length ? `已选择 ${picked.length} 张（最多 4 张，自动压缩）` : myStatus === 'SUBMITTED' ? '重新上传答案图片（1-4 张）' : '上传答案图片（1-4 张）'}</span></label>
+        {previewList.length > 0 && <div className="plan-images">{previewList.map((url, index) => <img key={url} className="plan-image" src={url} alt={`预览 ${index + 1}`} />)}</div>}
+        <Button size="sm" variant="secondary" disabled={!picked.length} loading={submitting === task.id} onClick={() => submitAnswers(task)}>{myStatus === 'SUBMITTED' ? '重新提交答案' : '提交答案'}</Button>
+      </div>}
+      {!overdue && <div className="task-peers">
+        {task.students.filter(student => student.id !== me.id).map(peer => {
+          const peerStatus = statusOf(task, peer.userId);
+          return <span key={peer.userId} className={cn('peer-chip', `st-${peerStatus}`)}><Avatar user={peer} size="sm" />{peer.displayName} · {taskStatusName(peerStatus)}</span>;
+        })}
+      </div>}
+    </article>;
+  };
+  return <div className="page-enter">
+    <div className="page-title-row"><div><h1>任务 · 本周必做</h1><p>查看题目、上传答案提交，管理员判卷后标记「答对了」；被打回可重新提交。</p></div><Badge tone="soft"><ListChecks size={14} />{active.length} 个进行中</Badge></div>
+    {tasks === null ? <PageLoading /> : tasks.length === 0 ? <EmptyState icon={ListChecks} title="暂无任务" description="有新任务发布后会出现在这里。" /> : <>
+      {groups.map(group => <section className="card" key={group.name}>
+        <SectionHeader title={group.name} description={`共 ${group.list.length} 个进行中任务`} action={<ListChecks size={21} className="accent-icon" />} />
+        <div className="task-student-list">{group.list.map(task => renderTask(task))}</div>
+      </section>)}
+      <section className="card">
+        <SectionHeader title="历史任务" description="已截止的任务归档；仍可提交答案等待判卷。" action={<History size={21} className="accent-icon" />} />
+        {history.length ? <div className="task-student-list">{history.map(task => renderTask(task, true))}</div> : <EmptyState icon={History} title="还没有历史任务" description="任务截止后会归档到这里。" />}
+      </section>
+    </>}
+  </div>;
+}
+
+export function WeeklyPlanPage({ bootstrap, notify }) {
+  const [loading, setLoading] = useState(true); const [planData, setPlanData] = useState(null); const [requests, setRequests] = useState([]); const [board, setBoard] = useState(null); const [archive, setArchive] = useState([]);
+  const [files, setFiles] = useState([]); const [previews, setPreviews] = useState([]); const [note, setNote] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [showUpload, setShowUpload] = useState(false); const [weekChoice, setWeekChoice] = useState('');
+  const [detail, setDetail] = useState(null); const [detailPoints, setDetailPoints] = useState(3); const [detailReason, setDetailReason] = useState(''); const [detailSaving, setDetailSaving] = useState(false);
+  const me = bootstrap.user;
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [planData, requestList, boardData, archiveData] = await Promise.all([api('/api/weekly-plans'), api('/api/point-requests'), api('/api/points/leaderboard'), api('/api/weekly-plans/archive')]);
+      setPlanData(planData); setRequests(requestList); setBoard(boardData); setArchive(archiveData.plans || []);
+    } catch (err) { notify(err.message, 'error'); } finally { setLoading(false); }
+  }, []);
+  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    const urls = files.map(file => URL.createObjectURL(file));
+    setPreviews(urls);
+    return () => urls.forEach(url => URL.revokeObjectURL(url));
+  }, [files]);
+  const weekStart = planData?.weekStart;
+  const weekRange = weekStart ? weekRangeLabel(weekStart) : '';
+  const weekAnchor = bootstrap.group?.gapPlanStart ? mondayOf(bootstrap.group.gapPlanStart) : null;
+  const weekNum = value => weekAnchor ? Math.round((new Date(`${value}T00:00:00Z`) - new Date(`${weekAnchor}T00:00:00Z`)) / 604800000) + 1 : null;
+  const weekTitle = value => { const num = weekNum(value); return num != null && num > 0 ? `第 ${num} 周` : weekRangeLabel(value); };
+  const myPlan = planData?.plans?.find(item => item.userId === me.id);
+  const myRequest = requests.find(item => item.weekStart === weekStart);
+  const currentWeekNum = weekStart ? weekNum(weekStart) : null;
+  const weekOptions = [];
+  if (weekAnchor && weekStart) {
+    for (let num = 1; num <= (currentWeekNum || 1) + 10; num++) {
+      const start = new Date(`${weekAnchor}T00:00:00Z`);
+      start.setUTCDate(start.getUTCDate() + (num - 1) * 7);
+      const value = start.toISOString().slice(0, 10);
+      weekOptions.push({ num, value, range: weekRangeLabel(value) });
+    }
+  }
+  const deletePlan = async () => {
+    if (!myPlan || !window.confirm('确定删除本周计划吗？删除后可以重新上传。')) return;
+    setSaving(true);
+    try {
+      await api(`/api/weekly-plans/${myPlan.id}`, { method: 'DELETE' });
+      await load(); notify('本周计划已删除');
+    } catch (err) { notify(err.message, 'error'); } finally { setSaving(false); }
+  };
+  const submitPlan = async event => {
+    event.preventDefault();
+    if (!files.length) { notify('请选择至少一张计划照片', 'error'); return; }
+    setSaving(true);
+    try {
+      const compressed = await Promise.all(files.map(file => compressImage(file)));
+      const before = files.reduce((sum, file) => sum + file.size, 0);
+      const after = compressed.reduce((sum, file) => sum + file.size, 0);
+      const body = new FormData();
+      compressed.forEach(file => body.append('files', file));
+      body.append('weekStart', weekChoice || weekStart || '');
+      body.append('note', note);
+      await api('/api/weekly-plans', { method: 'POST', body });
+      setFiles([]); setNote(''); setShowUpload(false); await load();
+      notify(after < before ? `本周计划已提交（图片已压缩 ${Math.round((1 - after / before) * 100)}%，加快加载）` : '本周计划已提交，同伴可以看到');
+    } catch (err) { notify(err.message, 'error'); } finally { setSaving(false); }
+  };
+  const submitDetailPoints = async event => {
+    event.preventDefault(); setDetailSaving(true);
+    try {
+      await api('/api/point-requests', { method: 'POST', body: { weekStart: detail.plan.weekStart, points: detailPoints, reason: detailReason } });
+      setDetailReason('');
+      const requestList = await api('/api/point-requests');
+      setRequests(requestList);
+      setDetail(current => ({ ...current, request: requestList.find(item => item.weekStart === current.plan.weekStart) }));
+      notify('积分申请已提交，等待管理员确认');
+    } catch (err) { notify(err.message, 'error'); } finally { setDetailSaving(false); }
+  };
+  return <div className="page-enter">
+    <div className="page-title-row"><div><h1>每周计划与积分</h1><p>上传和爸妈讨论后的计划，同伴互相看见；按周申请 1-5 积分，管理员确认后计入积分榜。</p></div><Badge tone="soft"><CalendarDays size={14} />{weekRange || '本周'}</Badge></div>
+    {loading ? <PageLoading /> : <div className="weekly-layout">
+      <section className="card">
+        <SectionHeader title="我的本周计划" description={myPlan ? '本周计划已提交，重复上传会覆盖本周照片。' : '还没有本周计划，上传和爸妈讨论后的计划照片。'} action={<ImagePlus size={21} className="accent-icon" />} />
+        {myPlan && !showUpload ? <>
+          <div className="plan-images">{myPlan.files.map((file, index) => <PlanImage key={file.storedName} planId={myPlan.id} index={index} />)}</div>
+          {myPlan.note && <p className="plan-note">{myPlan.note}</p>}
+          <div className="plan-self-foot">
+            {myRequest ? <div className="request-inline"><StatusBadge status={myRequest.status} /><strong>{myRequest.points} 分</strong>{myRequest.reviewReason && <span>管理员说明：{myRequest.reviewReason}</span>}</div> : <Button size="sm" variant="soft" onClick={() => { setDetailPoints(3); setDetailReason(''); setDetail({ plan: myPlan, request: null }); }}>申请本周积分</Button>}
+            <Button size="sm" variant="ghost" icon={UploadCloud} onClick={() => setShowUpload(true)}>重新上传</Button>
+            <Button size="sm" variant="ghost" icon={Trash2} onClick={deletePlan}>删除本周计划</Button>
+          </div>
+        </> : <form className="form-grid" onSubmit={submitPlan}>
+          <Field label="计划周次" hint="默认当前周，可选择未来周提前上传">
+            <select value={weekChoice || weekStart || ''} onChange={e => setWeekChoice(e.target.value)}>
+              {weekOptions.map(option => <option key={option.value} value={option.value}>第 {option.num} 周（{option.range}）</option>)}
+            </select>
+          </Field>
+          <label className="plan-file-input"><input type="file" accept="image/jpeg,image/png,image/webp" multiple onChange={e => setFiles(Array.from(e.target.files || []).slice(0, 3))} /><span>{files.length ? `已选择 ${files.length} 张（最多 3 张，上传时自动压缩）` : '选择计划照片（1-3 张，自动压缩）'}</span></label>
+          {previews.length > 0 && <div className="plan-images">{previews.map((url, index) => <img key={url} className="plan-image" src={url} alt={`预览 ${index + 1}`} />)}</div>}
+          <Field label="计划说明" hint="选填"><textarea rows="2" value={note} onChange={e => setNote(e.target.value)} placeholder="例如：数学每天 30 分钟专项；英语单词打卡。" /></Field>
+          <div className="plan-upload-actions"><Button type="submit" loading={saving} icon={UploadCloud}>提交本周计划</Button>{myPlan && <Button type="button" variant="ghost" onClick={() => setShowUpload(false)}>取消</Button>}</div>
+        </form>}
+      </section>
+      <section className="card span-2">
+        <SectionHeader title="计划记录 · 我和同伴" description="我和同伴每周的计划归档；点击任意一行查看当周详情。" action={<History size={21} className="accent-icon" />} />
+        {archive.length ? <div className="plan-record-list">{archive.map(plan => {
+          const request = plan.userId === me.id ? requests.find(item => item.weekStart === plan.weekStart) : null;
+          return <div className="plan-record-row" key={plan.id} onClick={() => { setDetailPoints(3); setDetailReason(''); setDetail({ plan, request }); }}>
+            <div className="plan-record-user"><Avatar user={plan.user} size="sm" /><div><b>{plan.user.displayName}{plan.userId === me.id ? '（我）' : ''}</b><span>{weekTitle(plan.weekStart)} · {weekRangeLabel(plan.weekStart)}</span></div></div>
+            <div className="plan-record-thumbs">{plan.files.slice(0, 3).map((file, index) => <PlanImage key={file.storedName} planId={plan.id} index={index} />)}</div>
+            <div className="plan-record-meta"><span>提交 {date(plan.updatedAt, true)}</span><span>{plan.files.length} 张照片</span></div>
+            <div className="plan-record-points">{plan.userId === me.id ? (request ? <><StatusBadge status={request.status} /><strong className="points-value">{request.points} 分</strong></> : <Button size="sm" variant="soft" onClick={event => { event.stopPropagation(); setDetailPoints(3); setDetailReason(''); setDetail({ plan, request: null }); }}>申请积分</Button>) : <Badge tone="soft">同伴计划</Badge>}</div>
+          </div>;
+        })}</div> : <EmptyState icon={CalendarDays} title="还没有计划记录" description="上传第一周的计划后，这里会按周列出我和同伴的记录。" />}
+      </section>
+      <section className="card span-2">
+        <SectionHeader title="积分榜" description="本周榜看这一周的确认积分，累计榜看学期总和。" action={<Trophy size={21} className="accent-icon" />} />
+        <div className="leaderboard-grid">
+          <PointsBoard title={`本周积分 · ${weekRange}`} rows={board?.rows || []} meId={me.id} metric="weekly" />
+          <PointsBoard title="累计积分" rows={board?.rows || []} meId={me.id} metric="total" />
+        </div>
+      </section>
+    </div>}
+    {detail && <Modal title={`${detail.plan.userId === me.id ? '' : `${detail.plan.user.displayName} · `}${weekTitle(detail.plan.weekStart)} · 计划详情`} description={weekRangeLabel(detail.plan.weekStart)} onClose={() => setDetail(null)} footer={<Button variant="ghost" onClick={() => setDetail(null)}>关闭</Button>}>
+      <div className="plan-images">{detail.plan.files.map((file, index) => <PlanImage key={file.storedName} planId={detail.plan.id} index={index} />)}</div>
+      {detail.plan.note && <p className="plan-note">{detail.plan.note}</p>}
+      <div className="plan-detail-meta"><span>最近提交：{date(detail.plan.updatedAt, true)}</span><span>{detail.plan.files.length} 张照片</span></div>
+      {detail.plan.userId === me.id && <>
+      <div className="form-section-title">当周积分</div>
+      {detail.request ? <div className="request-status"><div className="request-status-head"><StatusBadge status={detail.request.status} /><strong>{detail.request.points} 分</strong></div><p className="plan-note">{detail.request.reason}</p>{detail.request.reviewReason && <p className="plan-note review">管理员说明：{detail.request.reviewReason}</p>}</div> : <form className="form-grid" onSubmit={submitDetailPoints}>
+        <div className="point-options">{[1, 2, 3, 4, 5].map(value => <button type="button" key={value} className={detailPoints === value ? 'active' : ''} onClick={() => setDetailPoints(value)}>{value} 分</button>)}</div>
+        <Field label="这周完成情况" required><textarea rows="3" value={detailReason} onChange={e => setDetailReason(e.target.value)} required placeholder="说明这周计划完成情况和进步点，供管理员确认。" /></Field>
+        <Button type="submit" loading={detailSaving}>提交积分申请</Button>
+      </form>}
+      </>}
+    </Modal>}
+  </div>;
 }
